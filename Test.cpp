@@ -11,7 +11,7 @@ void printExpected(double *result, int sizeN, int sizeM, int sizeK) {
     puts("");
 }
 
-void getExpected(double *result, double *matrix1, double *matrix2, int sizeN, int sizeM, int sizeK) {
+void calcExpected(double *result, double *matrix1, double *matrix2, int sizeN, int sizeM, int sizeK) {
     for (int i = 0; i < sizeN; ++i) {
         for (int j = 0; j < sizeK; ++j) {
             for (int k = 0; k < sizeM; ++k) {

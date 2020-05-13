@@ -17,10 +17,21 @@ void setType(int count, int blocklength, int *arrOfTypes, int *arrOfBlocklengths
     MPI_Type_commit(newType);
 }
 
+void calcPartC(int localM, int localK, double *partA, double *partB, double *partC) {
+    for (int i = 0; i < localM; i++) {
+        for (int j = 0; j < localK; j++) {
+            partC[localK * i + j] = 0.0;
+            for (int k = 0; k < N; k++) {
+                partC[localK * i + j] = partC[localK * i + j] + partA[N * i + k] * partB[localK * k + j];
+            }
+        }
+    }
+}
+
 int MatrixMultiply_2D(double *A, double *B, double *C, int *p, MPI_Comm comm) {
     MPI_Comm comm_2D, comm_1D[2], comm_dup;
 
-    // Во всех ветвях задаем подматрицы (полосы) [делим без остатка]
+    // Во всех ветвях задаем подматрицы (полосы)
     // тут кратны.
     int localM = M / p[0];
     int localK = K / p[1];
@@ -33,22 +44,21 @@ int MatrixMultiply_2D(double *A, double *B, double *C, int *p, MPI_Comm comm) {
     MPI_Bcast(p, NUM_DIMS, MPI_INT, 0, comm_dup);
 
     // Создаем 2D решетку компьютеров размером p[0]*p[1]
-    int periodic[2] = {0, 0};
-    MPI_Cart_create(comm_dup, 2, p, periodic, 0, &comm_2D);
+    int periods[NUM_DIMS] = {0};
+    MPI_Cart_create(comm_dup, NUM_DIMS, p, periods, 0, &comm_2D);
 
-    // Находим порядковые номера ветвей и декартовы координаты ветвей в этой решетке
     int rank;
-    int coords[2];
-    MPI_Comm_rank(comm_2D, &rank);
-    MPI_Cart_coords(comm_2D, rank, 2, coords);
+    int coords[NUM_DIMS];
+    MPI_Comm_rank(comm_2D, &rank); // Находим порядковые номера ветвей
+    MPI_Cart_coords(comm_2D, rank, NUM_DIMS, coords); // Находим декартовы координаты ветвей в этой решетке
 
     // Нахождение коммуникаторов для подрешеток 1D для рассылки полос матриц A и B
-    int remains[2];
+    int belongs[2];
     for (int i = 0; i < NUM_DIMS; i++) {
         for (int j = 0; j < NUM_DIMS; j++) {
-            remains[j] = (int) (i == j);
+            belongs[j] = (int) (i == j);
         }
-        MPI_Cart_sub(comm_2D, remains, &comm_1D[i]);
+        MPI_Cart_sub(comm_2D, belongs, &comm_1D[i]);
     }
 
     auto *partA = (double *) malloc(localM * N * sizeof(double));
@@ -70,65 +80,46 @@ int MatrixMultiply_2D(double *A, double *B, double *C, int *p, MPI_Comm comm) {
         MPI_Type_free(&arrOfTypes[0]);
     }
 
-    // 1. Нулевая ветвь передает (scatter) горизонтальные полосы матрицы A по x координате
+    // 1. Нулевая ветвь передает (scatter) горизонтальные полосы матрицы A по x [0] координате
     if (coords[1] == 0) {
         MPI_Scatter(A, localM * N, MPI_DOUBLE, partA, localM * N, MPI_DOUBLE, 0, comm_1D[0]);
     }
 
-    // 2. Нулевая ветвь передает (scatter) горизонтальные полосы матрицы B по y координате
+    // 2. Нулевая ветвь передает (scatter) горизонтальные полосы матрицы B по y [1] координате
     if (coords[0] == 0) {
-        // == разделение матрицы В вдоль координаты у
-        // Вычисление размера подматрицы partB и смещений каждой подматрицы в матрице B.
-        // Подматрицы partB упорядочены в B в соответствии с порядком номеров компьютеров в решетке, т.к.
-        // массивы расположены в памяти по строкам, то подматрицы partB в памяти (в B) должны располагаться
-        // в следующей последовательности: PartB0, PartB1,....
-        // Смещения и размер подматриц CС для сборки в корневом процессе (ветви)
-        int *dispb = (int *) malloc(p[1] * sizeof(int));
-        int *countb = (int *) malloc(p[1] * sizeof(int));
+        int *dispB = (int *) malloc(p[1] * sizeof(int));
+        int *sendcountsB = (int *) malloc(p[1] * sizeof(int));
         for (int j = 0; j < p[1]; j++) {
-            dispb[j] = j;
-            countb[j] = 1;
+            dispB[j] = j;
+            sendcountsB[j] = 1;
         }
 
-        MPI_Scatterv(B, countb, dispb, typeb, partB,
+        MPI_Scatterv(B, sendcountsB, dispB, typeb, partB,
                      N * localK, MPI_DOUBLE, 0, comm_1D[1]);
     }
 
-    // 3. Передача подматриц partA в измерении y */
+    // 3. Передача полос partA в измерении y [1]
     MPI_Bcast(partA, localM * N, MPI_DOUBLE, 0,
               comm_1D[1]);
 
-    // 4. Передача подматриц partB в измерении x */
+    // 4. Передача полос partB в измерении x [0]
     MPI_Bcast(partB, N * localK, MPI_DOUBLE, 0,
               comm_1D[0]);
 
-    // 5. Вычисление подматриц PartС в каждой ветви */
-    for (int i = 0; i < localM; i++) {
-        for (int j = 0; j < localK; j++) {
-            partC[localK * i + j] = 0.0;
-            for (int k = 0; k < N; k++) {
-                partC[localK * i + j] = partC[localK * i + j] + partA[N * i + k] * partB[localK * k + j];
-            }
-        }
-    }
-
-    // Вычисление размера подматрицы PartС и смещений каждой подматрицы в матрице C. Подматрицы partC
-    // упорядочены в С в соответствии с порядком номеров компьютеров в решетке, т.к. массивы расположены в
-    // памяти по строкам, то подматрицы PartС в памяти (в С) должны располагаться в следующей
-    // последовательности: PartС0, PartС1, PartС2, PartC3, PartС4, PartС5, PartС6, PartС7.
-    // Смещения и размер подматриц PartС для сборки в корневом процессе (ветви)
-    int *dispc = (int *) malloc(p[0] * p[1] * sizeof(int));
-    int *countc = (int *) malloc(p[0] * p[1] * sizeof(int));
-    for (int i = 0; i < p[0]; i++) {
-        for (int j = 0; j < p[1]; j++) {
-            dispc[i * p[1] + j] = (i * p[1] * localM + j);
-            countc[i * p[1] + j] = 1;
-        }
-    }
+    // 5. Вычисление подматриц PartС в каждой ветви
+    calcPartC(localM, localK, partA, partB, partC);
 
     // 6. Сбор всех подматриц PartС в ветви 0
+    int *revcountsC = (int *) malloc(p[0] * p[1] * sizeof(int));
+    int *dispC = (int *) malloc(p[0] * p[1] * sizeof(int));
+    for (int i = 0; i < p[0]; i++) {
+        for (int j = 0; j < p[1]; j++) {
+            revcountsC[i * p[1] + j] = 1;
+            dispC[i * p[1] + j] = (i * p[1] * localM + j);
+        }
+    }
     MPI_Gatherv(partC, localM * localK, MPI_DOUBLE, C,
-                countc, dispc, typec, 0, comm_2D);
+                revcountsC, dispC, typec, 0, comm_2D);
 
     free(partA);
     free(partB);
@@ -139,8 +130,8 @@ int MatrixMultiply_2D(double *A, double *B, double *C, int *p, MPI_Comm comm) {
         MPI_Comm_free(&i);
     }
     if (rank == 0) {
-        free(countc);
-        free(dispc);
+        free(revcountsC);
+        free(dispC);
         MPI_Type_free(&typeb);
         MPI_Type_free(&typec);
     }
@@ -188,7 +179,7 @@ int main(int argc, char **argv) {
 
         initABC(A, B, C, expected, M, N, K);
 
-        getExpected(expected, A, B, N, M, K);
+        calcExpected(expected, A, B, N, M, K);
     }
 
     double start_time, end_time;
