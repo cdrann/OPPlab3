@@ -3,7 +3,7 @@ project(OPPlab3)
 
 set(CMAKE_CXX_STANDARD 14)
 
-add_executable(OPPlab3 main.cpp Test.cpp Test.h)
+add_executable(OPPlab3 main.cpp Test.cpp Test.h InitABC.h InitABC.cpp)
 # Require MPI for this project:
 
 find_package(MPI REQUIRED)

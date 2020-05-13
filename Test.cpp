@@ -1,8 +1,4 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <cmath>
-
-#define answerExpected(i, j) answerExpected[K * i + j]
 
 void printExpected(double *result, int sizeN, int sizeM, int sizeK) {
     puts("EXPECTED:");
